@@ -860,6 +860,8 @@ def async_event_loop():
     if pipe.final_stage:
         loss = output.mean()
         loss.backward()
+    elif pipe.group.rank() == 0:
+        pipe.back_helper([])
 
 
 @torch_spawn([4])
@@ -907,6 +909,8 @@ def reuse_lazy():
     if pipe.final_stage:
         pipe_loss = pipe_out.mean()
         pipe_loss.backward()
+    elif pipe.group.rank() == 0:
+        pipe.back_helper([])
 
     model_loss = model_out.mean()
     model_loss.backward()

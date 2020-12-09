@@ -65,7 +65,11 @@ def python_autograd_function(pipeline_style):
     if model.group.rank() == 1:
         assert torch.allclose(x, y)
 
-    torch.distributed.rpc.shutdown()
+    try:
+        torch.distributed.rpc.shutdown()
+    except RuntimeError as e:
+        pass  # rpc might not be enabled, e.g. with MPI
+
     torch.distributed.barrier()
 
 

@@ -111,7 +111,7 @@ def test_adjacency(monkeypatch):
             return data_parallel_size * pipeline_length * model_parallel_size
 
         def new_group(self, args, backend=None):
-            new_groups.append(args.copy())
+            new_groups.append(tuple(args.copy()))
             return ()
 
     monkeypatch.setattr(torch, "distributed", MockDistribued())
@@ -120,10 +120,10 @@ def test_adjacency(monkeypatch):
 
     from collections import defaultdict
 
-    buckets = defaultdict(list)
+    buckets = defaultdict(set)
 
     for group in new_groups:
-        buckets[len(group)].append(group)
+        buckets[len(group)].add(group)
 
     assert sorted(list(buckets.keys())) == [model_parallel_size, pipeline_length, data_parallel_size]
 
@@ -133,5 +133,5 @@ def test_adjacency(monkeypatch):
 
     # Check that model_parallel groups are contiguous
     for group in buckets[model_parallel_size]:
-        assert sorted(group) == group
-        assert list(range(group[0], group[-1] + 1)) == group
+        assert sorted(group) == list(group)
+        assert tuple(range(group[0], group[-1] + 1)) == group

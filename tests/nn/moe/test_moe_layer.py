@@ -29,6 +29,8 @@ if "OMPI_COMM_WORLD_SIZE" in os.environ:
 def setup_module(module):
     if "OMPI_COMM_WORLD_SIZE" not in os.environ:
         dist.init_process_group(backend=BACKEND, rank=0, world_size=1)
+    else:
+        dist.init_process_group(backend=dist.Backend.MPI)
 
 
 def teardown_module(module):

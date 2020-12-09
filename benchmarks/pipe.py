@@ -1,7 +1,6 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All rights reserved.
 
 import argparse
-import logging
 import math
 import os
 import time
@@ -287,15 +286,15 @@ def train(lm_dataloader, model, criterion, optimizer, vocab_size, args):
         if torch.cuda.is_available():
             total = total.cuda()
         torch.distributed.all_reduce(total, group=model.group)
-        logging.info(
+        print(
             f"training model, #prams = {num_params}, group: {model.group.rank()}, grank:"
             f" {torch.distributed.get_rank()}, sizes {model.group.size()}"
         )
         torch.distributed.barrier()
         if model.group.rank() == 0:
-            logging.info(f"total #prams = {total.item()}")
+            print(f"total #prams = {total.item()}")
     else:
-        logging.info(f"training model, #prams = {num_params}")
+        print(f"training model, #prams = {num_params}")
     vocab_size = 10000  # FIXME
     total_loss = 0.0
     start_time = time.time()
@@ -347,6 +346,7 @@ def train(lm_dataloader, model, criterion, optimizer, vocab_size, args):
 
         lm_dataloader = FakeDataset()
 
+    pipe_loss = True
     for i, batch in enumerate(lm_dataloader):
         bi = batch["input"]
         if args.max_batch and i > args.max_batch:
@@ -355,24 +355,36 @@ def train(lm_dataloader, model, criterion, optimizer, vocab_size, args):
         try:
             if (pipe_group is None or pipe_group.rank() == 0) and not args.ddp_zero:
                 tmp = batch["input"].to(get_first_device(model))
-                output = model(tmp)
+                if pipe_loss:
+                    target = batch["target"].to(get_first_device(model))
+                    output = model(tmp, target=target)
+                else:
+                    output = model(tmp)
             else:
-                output = model(batch["input"])
+                if pipe_loss and "target" in batch:
+                    target = batch["target"].to(get_first_device(model))
+                    output = model(batch["input"], target=target)
+                else:
+                    output = model(batch["input"])
         except Exception as e:
             raise RuntimeError(f"training failed on {torch.distributed.get_rank()}") from e
 
         if pipe_group is None or pipe_group.rank() == pipe_group.size() - 1:
-            target = batch["target"].to(get_last_device(model))
-            output = output.to(target.device)
+            if pipe_loss:
+                loss = output
+            else:
+                target = batch["target"].to(get_last_device(model))
+                output = output.to(target.device)
 
-            loss = criterion(output.view(-1, vocab_size), target.view(-1))
+                loss = criterion(output.view(-1, vocab_size), target.view(-1))
             if args.ddp_zero:
                 ddp_group = get_data_parallel_group()
                 torch.distributed.all_reduce(loss, op=torch.distributed.ReduceOp.SUM, group=ddp_group)
                 loss /= ddp_group.size()
+
             loss.backward()
             del target
-        else:
+        elif pipe_group.rank() == 0:  # FIXME
             if args.ddp_zero:
                 model.module.back_helper(output)
             else:
@@ -398,6 +410,7 @@ def train(lm_dataloader, model, criterion, optimizer, vocab_size, args):
                 word_counter = 0
                 total_loss = 0
                 start_time = time.time()
+            del loss
         # if i >= 10:
         #    break
         # torch.cuda.empty_cache()
@@ -556,6 +569,9 @@ def run_mp_worker(args, available_workers):
     blob = make_model_and_data(args, None, new_data=new_data)
     model = blob["model"]
 
+    def crit(output, target, vocab_size=blob["vocab_size"], criterion=blob["criterion"]):
+        return criterion(output.view(-1, vocab_size), target.view(-1))
+
     balance = generate_balance_weighted(get_pipeline_parallel_group().size(), len(model), 0.8)
     p = pipe.Pipe(
         model,
@@ -566,10 +582,11 @@ def run_mp_worker(args, available_workers):
         input_device=torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"),
         pipelined_backward=args.pipelined_backward,
         checkpoint=args.checkpoint,
-        # loss_fn=blob["criterion"],
+        loss_func=crit,
     )
     if torch.cuda.is_available():
         p = p.cuda()
+
     if args.all_at_once and p.pipeline:
         print(f"running all at once")
         p.pipeline.all_at_once = True
@@ -614,6 +631,10 @@ best_device_map = {
 
 
 def bench_mpi(args):
+    import torch_pg
+
+    torch_pg.init_mpi()
+
     guess_rank = int(os.environ["OMPI_COMM_WORLD_RANK"])
     world_size = int(os.environ["OMPI_COMM_WORLD_SIZE"])
     local_rank = int(os.environ["OMPI_COMM_WORLD_LOCAL_RANK"])

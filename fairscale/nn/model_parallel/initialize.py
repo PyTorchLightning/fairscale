@@ -37,6 +37,8 @@ _PIPELINE_PARALLEL_GROUP = None
 
 _PIPELINE_PARALLEL_RANKS = None
 
+_MODEL_PARALLEL_PIPE_BACKEND_GROUP = None
+
 
 def initialize_model_parallel(
     model_parallel_size_: int,
@@ -97,11 +99,16 @@ def initialize_model_parallel(
     # Build the model parallel groups.
     global _MODEL_PARALLEL_GROUP
     assert _MODEL_PARALLEL_GROUP is None, "model parallel group is already initialized"
+    global _MODEL_PARALLEL_PIPE_BACKEND_GROUP
+    assert _MODEL_PARALLEL_PIPE_BACKEND_GROUP is None
     for i in range(data_parallel_size):
         for j in range(pipeline_length):
-            group = torch.distributed.new_group(groups[i, j, :].tolist(), backend=model_parallel_backend)
+            ranks = groups[i, j, :].tolist()
+            group = torch.distributed.new_group(ranks, backend=model_parallel_backend)
+            group2 = torch.distributed.new_group(ranks, backend=pipeline_backend)
             if i == found[0] and j == found[1]:
                 _MODEL_PARALLEL_GROUP = group
+                _MODEL_PARALLEL_PIPE_BACKEND_GROUP = group2
 
     global _PIPELINE_PARALLEL_GROUP
     assert _PIPELINE_PARALLEL_GROUP is None, "model parallel group is already initialized"
@@ -157,6 +164,11 @@ def get_model_parallel_rank() -> int:
     return torch.distributed.get_rank(group=get_model_parallel_group())
 
 
+def get_model_parallel_group_with_pipeline_backend() -> torch.distributed.ProcessGroup:
+    assert _MODEL_PARALLEL_PIPE_BACKEND_GROUP is not None, "model parallel group is not initialized"
+    return _MODEL_PARALLEL_PIPE_BACKEND_GROUP
+
+
 def get_model_parallel_src_rank() -> int:
     """Calculate the global rank corresponding to a local rank zero
     in the model parallel group."""
@@ -186,3 +198,6 @@ def destroy_model_parallel() -> None:
 
     global _PIPELINE_PARALLEL_RANKS
     _PIPELINE_PARALLEL_RANKS = None
+
+    global _MODEL_PARALLEL_PIPE_BACKEND_GROUP
+    _MODEL_PARALLEL_PIPE_BACKEND_GROUP = None

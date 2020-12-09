@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import torch.multiprocessing as mp
 import torch_pg
 
 import fairscale
@@ -25,13 +26,13 @@ def run_optimizer(ctx, model):
 
 
 def run(rank, world_size):
-    torch_pg.init_mpi()
+    #torch_pg.init_mpi()
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["MASTER_PORT"] = "10638"
     torch.distributed.init_process_group(backend="nccl", rank=rank, world_size=world_size)
     os.environ["MASTER_PORT"] = "10639"
     torch.distributed.rpc.init_rpc(f"worker{rank}", rank=rank, world_size=world_size)
-    initialize_model_parallel(1, world_size, pipeline_backend="mpi")
+    initialize_model_parallel(1, world_size, pipeline_backend="gloo")
 
     if rank == 1:
         # For RPC, all ranks other than 0 just need to call rpc.shutdown()
@@ -70,7 +71,11 @@ def run(rank, world_size):
     del model
 
 
-if __name__ == "__main__":
+if False and __name__ == "__main__":
     rank = int(os.environ["OMPI_COMM_WORLD_RANK"])
     world_size = int(os.environ["OMPI_COMM_WORLD_SIZE"])
     run(rank, world_size)
+
+if __name__ == "__main__":
+    world_size = 2
+    mp.spawn(run, args=(world_size,), nprocs=world_size, join=True)
